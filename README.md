@@ -69,6 +69,19 @@ algorithms that should be applied to those columns. This table is populated in o
              populated in this stage, if it is not, then it is added in the next stage
           * `metadata` (determined) - additional JSON-structured metadata whose specific structure will vary based on
              the dataset and in some cases may not be required
+            * When a custom date format is required for an algorithm (besides `yyyy-MM-dd` or
+              `yyyy-MM-dd'T'HH:mm:ss'Z'` which are the default), the key `date_format` must be specified in the
+              metadata
+              * As an example, if you have a column `transaction_date` in your `Snowflake` instance, and each time that
+                column appears it has a date formated as `yyyyMMdd`, you should specify this format using an update
+                statement like
+                ```sql
+                UPDATE discovered_ruleset
+                SET metadata = JSON_MODIFY(metadata, '$.date_format', 'yyyyMMdd')
+                WHERE dataset = 'SNOWFLAKE' AND identified_column = 'transaction_date';
+                ```
+                Setting this value incorrectly will cause non-conformant data errors when the data violates the
+                specified pattern
        2. Collect data from the specified table and column combination and perform data profiling to determine if the
           data is likely to be sensitive. This is done by calling the `profiling` endpoint in DCS for Azure services,
           collecting the results of profiling, and persisting them to the `discovered_ruleset` metadata table,

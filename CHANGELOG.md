@@ -1,5 +1,10 @@
 # CHANGELOG
 
+# 0.0.6
+* Add support for handling custom date format in DCS for Azure Snowflake to Snowflake Masking Pipeline (with Snowflake linked service type)
+* Add support for handling custom date format in DCS for Azure Snowflake to Snowflake Masking Pipeline (with Snowflake (Legacy) linked service type)
+* Add support for handling custom date format in DCS for Azure ADLS to ADLS Masking Pipeline (for Gen2 Data Lake)
+
 # 0.0.5
 * Add support for handling non-conformant data to DCS for Azure Snowflake to Snowflake Masking Pipeline (with Snowflake linked service type)
 * Add support for handling non-conformant data to DCS for Azure Snowflake to Snowflake Masking Pipeline (with Snowflake (Legacy) linked service type)

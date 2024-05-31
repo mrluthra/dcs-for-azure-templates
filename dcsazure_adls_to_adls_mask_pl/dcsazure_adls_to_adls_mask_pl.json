@@ -9,13 +9,13 @@
     "Metadata Datastore": {
       "type": "string"
     },
-    "AzureDataLakeStorage_Generic_Source": {
+    "AzureDataLakeStorage_Source": {
       "type": "string"
     },
-    "AzureDataLakeStorage_Generic_Sink": {
+    "AzureDataLakeStorage_Sink": {
       "type": "string"
     },
-    "DCSForAzureProd": {
+    "ProdDCSForAzureService": {
       "type": "string"
     }
   },
@@ -121,7 +121,7 @@
                           "value": "'@{variables('METADATA_ADF_TYPE_MAPPING_TABLE')}'",
                           "type": "Expression"
                         },
-                        "DF_SOURCE_DB": {
+                        "DF_SOURCE_DATABASE": {
                           "value": "'@{item().source_database}'",
                           "type": "Expression"
                         },
@@ -138,8 +138,7 @@
                         "Ruleset": {},
                         "TypeMapping": {},
                         "MaskingParameterOutput": {}
-                      },
-                      "linkedServiceParameters": {}
+                      }
                     },
                     "staging": {},
                     "compute": {
@@ -251,13 +250,16 @@
                         "DF_TARGET_BATCH_SIZE": {
                           "value": "@variables('TARGET_BATCH_SIZE')",
                           "type": "Expression"
+                        },
+                        "DF_FIELD_DATE_FORMAT": {
+                          "value": "'@{activity('Get Masking Parameters').output.runStatus.output.MaskingParameterOutput.value[0].DateFormatAssignments}'",
+                          "type": "Expression"
                         }
                       },
                       "datasetParameters": {
                         "DelimitedSource": {},
                         "DelimetedSink": {}
-                      },
-                      "linkedServiceParameters": {}
+                      }
                     },
                     "staging": {},
                     "compute": {
@@ -592,7 +594,7 @@
           "name": "dcsazure_adls_to_adls"
         },
         "annotations": [],
-        "lastPublishTime": "2024-05-03T18:49:45Z"
+        "lastPublishTime": "2024-05-23T18:48:02Z"
       },
       "dependsOn": [
         "[concat(variables('factoryId'), '/datasets/dcsazure_adls_to_adls_metadata_mask_ds')]",
@@ -760,7 +762,23 @@
               "name": "ModifyNumberOfBatches"
             },
             {
-              "name": "FilterDatabricksType"
+              "name": "FilterAdlsType"
+            },
+            {
+              "name": "ParseMetadata"
+            },
+            {
+              "name": "FilteredColumnsWithDateFormat",
+              "description": "FilteredColumnsWithDateFormat"
+            },
+            {
+              "name": "DateFormatHeader"
+            },
+            {
+              "name": "DateFormatString"
+            },
+            {
+              "name": "AllMaskingParameters"
             }
           ],
           "scriptLines": [
@@ -769,7 +787,7 @@
             "     DF_METADATA_SCHEMA as string ('dbo'),",
             "     DF_METADATA_RULESET_TABLE as string ('discovered_ruleset'),",
             "     DF_METADATA_ADF_TYPE_MAPPING_TABLE as string ('adf_type_mapping'),",
-            "     DF_SOURCE_DB as string (''),",
+            "     DF_SOURCE_DATABASE as string (''),",
             "     DF_SOURCE_SCHEMA as string (''),",
             "     DF_SOURCE_TABLE as string ('')",
             "}",
@@ -782,9 +800,8 @@
             "          identified_column_type as string,",
             "          identified_column_max_length as integer,",
             "          ordinal_position as integer,",
-            "          container_name as string,",
-            "          delta_path as string,",
             "          row_count as long,",
+            "          metadata as string,",
             "          profiled_domain as string,",
             "          profiled_algorithm as string,",
             "          confidence_score as decimal(6,5),",
@@ -812,18 +829,20 @@
             "     tableName: ($DF_METADATA_ADF_TYPE_MAPPING_TABLE),",
             "     isolationLevel: 'READ_UNCOMMITTED') ~> TypeMapping",
             "Ruleset filter(equalsIgnoreCase(dataset, 'ADLS') ",
-            "&& equalsIgnoreCase(specified_database, $DF_SOURCE_DB) ",
+            "&& equalsIgnoreCase(specified_database, $DF_SOURCE_DATABASE) ",
             "&& equalsIgnoreCase(specified_schema, $DF_SOURCE_SCHEMA) ",
             "&& equalsIgnoreCase(identified_table, $DF_SOURCE_TABLE)",
             "&& !equalsIgnoreCase(assigned_algorithm, '')",
             "&& !isNull(assigned_algorithm)) ~> FilterToSingleTable",
-            "FilterToSingleTable, FilterDatabricksType join(identified_column_type <=> dataset_type,",
+            "FilterToSingleTable, FilterAdlsType join(identified_column_type <=> dataset_type,",
             "     joinType:'inner',",
             "     matchType:'exact',",
             "     ignoreSpaces: false,",
             "     broadcast: 'left')~> RulesetWithTypes",
-            "RulesetWithTypes derive(adf_type_conversion = concat(identified_column, ' as ', adf_type)) ~> RulesetWithAlgorithmTypeMapping",
-            "RulesetWithAlgorithmTypeMapping aggregate(FieldAlgorithmAssignments = regexReplace(reduce(mapAssociation(keyValues(collect(identified_column), collect(assigned_algorithm)), '\"' + #key + '\":\"' + #value + '\"'), '{', #acc + #item + ',', #result + '}'), ',}', '}'),",
+            "RulesetWithTypes derive(adf_type_conversion = concat(identified_column, ' as ', adf_type),",
+            "          output_row = 1) ~> RulesetWithAlgorithmTypeMapping",
+            "RulesetWithAlgorithmTypeMapping aggregate(groupBy(output_row),",
+            "     FieldAlgorithmAssignments = regexReplace(reduce(mapAssociation(keyValues(collect(identified_column), collect(assigned_algorithm)), '\"' + #key + '\":\"' + #value + '\"'), '{', #acc + #item + ',', #result + '}'), ',}', '}'),",
             "          ColumnsToMask = regexReplace(reduce(collect(identified_column), '[',  #acc + '\"' + #item + '\",', #result + ']'), ',]', ']'),",
             "          DataFactoryTypeMapping = concat(\"'\", '(timestamp as date, status as string, message as string, trace_id as string, items as (DELPHIX_COMPLIANCE_SERVICE_BATCH_ID as long, ',",
             "    regexReplace(reduce(collect(identified_column + ' as ' + adf_type), '', #acc + #item + ', ', #result + ')'), ', \\\\)', ')'),",
@@ -831,8 +850,21 @@
             "          NumberOfBatches = toInteger(ceil((avg(row_count) / (avg(identified_column_max_length) / count(identified_column) * 100)))),",
             "          TrimLengths = regexReplace(reduce(collect(identified_column_max_length), '[',  #acc + toString(#item) + ',', toString(#result) + ']'), ',]', ']')) ~> GenerateMaskParameters",
             "GenerateMaskParameters derive(NumberOfBatches = iif(NumberOfBatches > 0, NumberOfBatches, 1)) ~> ModifyNumberOfBatches",
-            "TypeMapping filter(equalsIgnoreCase(dataset, 'ADLS')) ~> FilterDatabricksType",
-            "ModifyNumberOfBatches sink(validateSchema: false,",
+            "TypeMapping filter(equalsIgnoreCase(dataset, 'ADLS')) ~> FilterAdlsType",
+            "RulesetWithTypes parse(parsed_metadata = metadata ? (date_format as string),",
+            "     format: 'json',",
+            "     documentForm: 'singleDocument') ~> ParseMetadata",
+            "DateFormatString filter(not(isNull(date_format_string))) ~> FilteredColumnsWithDateFormat",
+            "FilteredColumnsWithDateFormat aggregate(groupBy(output_row),",
+            "     DateFormatAssignments = regexReplace(reduce(mapAssociation(keyValues(collect(identified_column), collect(date_format_string)), '\"' + #key + '\":\"' + #value + '\"'), '{', #acc + #item + ',', #result + '}'), ',}', '}')) ~> DateFormatHeader",
+            "ParseMetadata derive(output_row = 1,",
+            "          date_format_string = parsed_metadata.date_format) ~> DateFormatString",
+            "ModifyNumberOfBatches, DateFormatHeader join(GenerateMaskParameters@output_row == DateFormatHeader@output_row,",
+            "     joinType:'inner',",
+            "     matchType:'exact',",
+            "     ignoreSpaces: false,",
+            "     broadcast: 'auto')~> AllMaskingParameters",
+            "AllMaskingParameters sink(validateSchema: false,",
             "     skipDuplicateMapInputs: true,",
             "     skipDuplicateMapOutputs: true,",
             "     store: 'cache',",
@@ -857,7 +889,7 @@
           "sources": [
             {
               "linkedService": {
-                "referenceName": "[parameters('AzureDataLakeStorage_Generic_Source')]",
+                "referenceName": "[parameters('AzureDataLakeStorage_Source')]",
                 "type": "LinkedServiceReference"
               },
               "name": "DelimitedSource",
@@ -867,7 +899,7 @@
           "sinks": [
             {
               "linkedService": {
-                "referenceName": "[parameters('AzureDataLakeStorage_Generic_Sink')]",
+                "referenceName": "[parameters('AzureDataLakeStorage_Sink')]",
                 "type": "LinkedServiceReference"
               },
               "name": "DelimetedSink"
@@ -877,7 +909,7 @@
             {
               "name": "DCSForAzureAPI",
               "linkedService": {
-                "referenceName": "[parameters('DCSForAzureProd')]",
+                "referenceName": "[parameters('ProdDCSForAzureService')]",
                 "type": "LinkedServiceReference"
               }
             },
@@ -956,7 +988,8 @@
             "     DF_BODY_TYPE_MAPPING as string ('(timestamp as date, status as string, message as string, trace_id as string, items as (DELPHIX_COMPLIANCE_SERVICE_BATCH_ID as long)[])'),",
             "     DF_TRIM_LENGTHS as integer[] ([-1]),",
             "     DF_FAIL_ON_NONCONFORMANT_DATA as boolean (true()),",
-            "     DF_TARGET_BATCH_SIZE as integer (2000)",
+            "     DF_TARGET_BATCH_SIZE as integer (2000),",
+            "     DF_FIELD_DATE_FORMAT as string ('{}')",
             "}",
             "source(useSchema: false,",
             "     allowSchemaDrift: true,",
@@ -987,7 +1020,7 @@
             "     store: 'restservice',",
             "     timeout: 30,",
             "     requestInterval: 0,",
-            "     headers = ['Run-Id' -> $runId, 'Field-Algorithm-Assignment' -> $DF_FIELD_ALGORITHM_ASSIGNMENT, 'Fail-On-Non-Conformant-Data' -> iif($DF_FAIL_ON_NONCONFORMANT_DATA,'true','false')],",
+            "     headers = ['Run-Id' -> $runId, 'Field-Algorithm-Assignment' -> $DF_FIELD_ALGORITHM_ASSIGNMENT, 'Fail-On-Non-Conformant-Data' -> iif($DF_FAIL_ON_NONCONFORMANT_DATA,'true','false'), 'Field-Date-Format' -> $DF_FIELD_DATE_FORMAT],",
             "     httpMethod: 'POST',",
             "     entity: 'v1/masking/batchMaskByColumn',",
             "     headerColumnName: 'headers',",
@@ -1064,7 +1097,7 @@
       "apiVersion": "2018-06-01",
       "properties": {
         "linkedServiceName": {
-          "referenceName": "[parameters('AzureDataLakeStorage_Generic_Source')]",
+          "referenceName": "[parameters('AzureDataLakeStorage_Source')]",
           "type": "LinkedServiceReference"
         },
         "parameters": {
@@ -1118,7 +1151,7 @@
           "sources": [
             {
               "linkedService": {
-                "referenceName": "[parameters('AzureDataLakeStorage_Generic_Source')]",
+                "referenceName": "[parameters('AzureDataLakeStorage_Source')]",
                 "type": "LinkedServiceReference"
               },
               "name": "DelimitedSource"
@@ -1127,7 +1160,7 @@
           "sinks": [
             {
               "linkedService": {
-                "referenceName": "[parameters('AzureDataLakeStorage_Generic_Sink')]",
+                "referenceName": "[parameters('AzureDataLakeStorage_Sink')]",
                 "type": "LinkedServiceReference"
               },
               "name": "DelimitedSink"
